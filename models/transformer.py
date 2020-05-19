@@ -10,6 +10,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 
 from models.base_model import BaseModel
+from models.modules import multi_head_attention, layer_norm, ffn
 
 
 class Transformer(BaseModel):
@@ -29,6 +30,7 @@ class Transformer(BaseModel):
         self.config.N = model_config.get('N')
         self.config.n_heads = model_config.get('n_heads')
         self.config.hidden_dim = model_config.get('hidden_dim')
+        self.config.ffn_dim = model_config.get('ffn_dim')
         self.config.input_process_dim = model_config.get('input_process_dim')
         self.config.output_process_dim = model_config.get('output_process_dim')
 
@@ -41,113 +43,94 @@ class Transformer(BaseModel):
             # training placeholder
             self.lr_ph = tf.placeholder(tf.float32)
 
-    def embedding(self, seq, process_dim, hidden_dim):
+    def get_embeddings(self, process_dim, hidden_dim, name):
         """Embed each discrete point in seq.
-        :param seq: with shape [...]
         :param process_dim: the depth of one hot seq
         :param hidden_dim: the dimension of embeedding
-        :return: the embedding of seq with shape [..., hidden_dim]
+        :param name: name for embedding variable
+        :return: the embeddings with shape [process_dim, hidden_dim]
         """
-        # onehot seq, shape -> [..., process_dim]
-        seq_onehot = tf.one_hot(seq, process_dim)
-        # embed onehot point using simple embedding, shape -> [..., hidden_dim]
-        seq_embedding = layers.Embedding(process_dim, hidden_dim)(seq_onehot)
-
-        return seq_embedding
+        embeddings = tf.get_variable(name, shape=[process_dim, hidden_dim], dtype=tf.float32,
+                                     initializer=tf.truncated_normal_initializer())
+        return embeddings
 
     def positional_encoding(self, seq):
         return None
 
+    def encode(self, input_seq, seq_mask):
+        with tf.variable_scope('encoder', reuse=tf.AUTO_REUSE):
+            # process key_mask
+            input_mask = None
 
-def multi_head_attention(queries, keys, values, n_heads, key_mask, causality, scope):
-    """
+            enc_output = input_seq
+            for i in range(self.config.N):
+                with tf.variable_scope('layer_{}'.format(i+1), reuse=tf.AUTO_REUSE):
+                    # multi-head attention
+                    mh_output = multi_head_attention(queries=enc_output,
+                                                     keys=enc_output,
+                                                     values=enc_output,
+                                                     n_heads=self.config.n_heads,
+                                                     key_mask=input_mask,
+                                                     causality=False,
+                                                     scope='mh_att')
 
-    :param queries: the query sequences. [..., n_queries, hidden_dim]
-    :param keys: the key sequences. [..., n_keys, hidden_dim]
-    :param values: the value sequences whose length is same as keys. [..., n_keys, hidden_dim]
-    :param n_heads: the number of heads
-    :param key_mask: mask for keys. [..., n_keys]
-    :param causality: mask for queries. True or False
-    :param scope: the variable scope name
-    :return:
-    """
+                    # short-cut and layer normalization
+                    mh_output = layer_norm(enc_output + mh_output)
 
-    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
-        hidden_dim = queries.get_shape().as_list()[-1]
-        # transform input
-        queries = layers.Dense(hidden_dim, name='Q_dense')(queries)
-        keys = layers.Dense(hidden_dim, name='K_dense')(keys)
-        values = layers.Dense(hidden_dim, name='V_dense')(values)
+                    # feed forward network
+                    ff_output = ffn(mh_output,
+                                    dims=[self.config.ffn_dim, self.config.hidden_dim],
+                                    scope='ffn')
 
-        # split the whole input into the part input for each head
-        # [n_heads, ..., n_queries, hidden_dim / n_heads]
-        queries = tf.stack(tf.split(queries, n_heads, axis=-1), axis=0)
-        # [n_heads, ..., n_keys, hidden_dim / n_heads]
-        keys = tf.stack(tf.split(keys, n_heads, axis=-1), axis=0)
-        # [n_heads, ..., n_keys, hidden_dim / n_heads]
-        values = tf.stack(tf.split(values, n_heads, axis=-1), axis=0)
+                    # short-cut and layer normalization
+                    ff_output = layer_norm(mh_output + ff_output)
 
-        # [n_heads, ..., n_queries, hidden_dim / n_heads]
-        context_vector = scaled_dot_product_attention(queries, keys, values, key_mask, causality)
-        # [..., n_queries, hidden_dim]
-        context_vector = tf.concat(tf.unstack(context_vector, axis=0), axis=-1)
+                    enc_output = ff_output
 
-        # merge all outputs of each head
-        output = layers.Dense(hidden_dim, name='head_merge')(context_vector)
+            return enc_output
 
-        return output
+    def decode(self, target_seq, source_seq, target_mask, source_mask):
+        with tf.variable_scope('decoder', reuse=tf.AUTO_REUSE):
 
+            dec_output = target_seq
+            for i in range(self.config.N):
+                with tf.variable_scope('layer_{}'.format(i + 1), reuse=tf.AUTO_REUSE):
+                    # masked multi-head attention for target_seq
+                    mask_mh_output = multi_head_attention(queries=dec_output,
+                                                          keys=dec_output,
+                                                          values=dec_output,
+                                                          n_heads=self.config.n_heads,
+                                                          key_mask=target_mask,
+                                                          causality=True,
+                                                          scope='masked_mh_att')
 
-def scaled_dot_product_attention(queries, keys, values, key_mask=None, causality=False):
-    """ Calculate the context vector using scaled dot product attention mechanism.
+                    # short-cut and layer normalization
+                    mask_mh_output = layer_norm(dec_output + mask_mh_output)
 
-    :param queries: [..., n_queries, hidden_dim]
-    :param keys: [..., n_keys, hidden_dim]
-    :param values: [..., n_keys, hidden_dim]
-    :param key_mask: mask for keys. [..., n_keys]
-    :param causality: mask for queries. True or False.
-    :return: context vector. [..., n_queries, hidden_dim]
-    """
+                    # multi-head attention for enc_output and target_seq
+                    mh_output = multi_head_attention(queries=mask_mh_output,
+                                                     keys=source_seq,
+                                                     values=source_seq,
+                                                     n_heads=self.config.n_heads,
+                                                     key_mask=source_mask,
+                                                     causality=False,
+                                                     scope='mh_att_with_enc_input')
+                    # short-cut and layer normalization
+                    mh_output = layer_norm(mask_mh_output + mh_output)
 
-    with tf.name_scope('scaled_attention'):
-        # general setting
-        MASKED_VAL = - 2 ** 31
-        score_fn = lambda q, k: tf.matmul(queries, keys, transpose_b=True) / tf.sqrt(
-            tf.cast(q.get_shape().as_list()[-1], dtype=tf.float32))
+                    # feed forward network
+                    ff_output = ffn(mh_output,
+                                    dims=[self.config.ffn_dim, self.config.hidden_dim],
+                                    scope='ffn')
 
-        score = score_fn(queries, keys)     # [..., n_queries, n_keys]
+                    # short-cut and layer normalization
+                    ff_output = layer_norm(mh_output + ff_output)
 
-        # mask score by mask of keys
-        if key_mask:
-            key_mask_mat = key_mask * MASKED_VAL  # [..., n_keys]
-            key_mask_mat = tf.expand_dims(key_mask_mat, -2)     # [..., 1, n_keys]
-            score += key_mask_mat
+                    dec_output = ff_output
 
-        # mask score by causality of queries
-        # mask values for the upper right area, including the diagonal
-        if causality:
+        return dec_output
 
-            ones_mat = tf.ones_like(score)
-            zeros_mat = tf.zeros_like(score)
-            masked_val_mat = ones_mat * MASKED_VAL
-
-            # [..., n_queries, n_keys]
-            lower_diag_masks = tf.linalg.LinearOperatorLowerTriangular(ones_mat).to_dense()
-
-            score = tf.where(tf.equal(lower_diag_masks, 0),
-                             masked_val_mat,
-                             score)
-            # [..., n_queries, n_keys]
-            attention_weight = tf.nn.softmax(score, axis=-1)
-            # attention_weight = tf.where(tf.equal(lower_diag_masks, 0),
-            #                             zeros_mat,
-            #                             attention_weight)
-
-        else:
-            # [..., n_queries, n_keys]
-            attention_weight = tf.nn.softmax(score, axis=2)
-
-        # [..., n_queries, hidden_dim]
-        context_vector = tf.matmul(attention_weight, values)
-
-        return context_vector
+    def inference(self, x):
+        with tf.variable_scope('inference', reuse=tf.AUTO_REUSE):
+            tf.einsum
+            x = layers.Dense(1, )
