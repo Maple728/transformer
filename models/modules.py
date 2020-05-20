@@ -6,8 +6,25 @@
 @time: 2020/5/19 18:59
 @desc:
 """
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
+
+
+def positional_encoding_map(max_len, dim, base=10000):
+    pe = [[pos / np.power(base, (i - i % 2) / dim) for i in range(dim)]
+          for pos in range(max_len)]
+    # shape -> [max_len, dim]
+    pe = np.array(pe)
+    pe[:, ::2] = np.sin(pe[:, ::2])
+    pe[:, 1::2] = np.cos(pe[:, 1::2])
+
+    return pe
+
+
+def label_smoothing(input_onehot, epsilon=0.1):
+    depth = input_onehot.get_shape().as_list()[-1]
+    return (1 - epsilon) * input_onehot + epsilon / depth
 
 
 def layer_norm(inputs, epsilon=1e-8, scope='layer_norm'):
@@ -73,22 +90,22 @@ def scaled_dot_product_attention(queries, keys, values, key_mask=None, causality
     :param queries: [..., n_queries, hidden_dim]
     :param keys: [..., n_keys, hidden_dim]
     :param values: [..., n_keys, hidden_dim]
-    :param key_mask: mask for keys. [..., n_keys]
+    :param key_mask: mask for keys. the flag of the point to be masked is 0, and the other is 1. [..., n_keys]
     :param causality: mask for queries. True or False.
     :return: context vector. [..., n_queries, hidden_dim]
     """
 
     with tf.name_scope('scaled_attention'):
         # general setting
-        MASKED_VAL = - 2 ** 31
+        MASKED_VAL = -2 ** 31
         score_fn = lambda q, k: tf.matmul(queries, keys, transpose_b=True) / tf.sqrt(
             tf.cast(q.get_shape().as_list()[-1], dtype=tf.float32))
 
         score = score_fn(queries, keys)     # [..., n_queries, n_keys]
 
         # mask score by mask of keys
-        if key_mask:
-            key_mask_mat = key_mask * MASKED_VAL  # [..., n_keys]
+        if key_mask is not None:
+            key_mask_mat = (1.0 - key_mask) * MASKED_VAL  # [..., n_keys]
             key_mask_mat = tf.expand_dims(key_mask_mat, -2)     # [..., 1, n_keys]
             score += key_mask_mat
 

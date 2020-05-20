@@ -22,6 +22,8 @@ def main(args):
         data_config = config['data']
         model_config = config['model']
 
+        ModelRunner(config)
+
         # load data
         # get data source
         data_loader = DataLoader(**data_config, **model_config)
@@ -40,7 +42,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config_filename', type=str, required=True,
+    parser.add_argument('--config_filename', type=str, required=False, default='configs/template.yaml',
                         help='Configuration filename for training or restoring the model.')
     args = parser.parse_args()
     main(args)

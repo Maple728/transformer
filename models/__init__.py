@@ -7,6 +7,8 @@
 @desc:
 """
 from models.base_model import BaseModel
+from models.transformer import Transformer
 
 
-__all__ = ['BaseModel']
+__all__ = ['BaseModel',
+           'Transformer']

@@ -1,10 +1,10 @@
 # Transformer
 
-Tensorflow implementation of Transformer model (paper https://arxiv.org/abs/1706.03762). 
+Tensorflow 1.0 implementation of Transformer model (paper https://arxiv.org/abs/1706.03762). 
 
 ## Requirements
 - python>=3.6
-- tensorflow>=1.12.0
+- tensorflow>=1.13.0
 - numpy
 
 
