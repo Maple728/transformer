@@ -2,6 +2,11 @@
 
 Tensorflow 1.0 implementation of Transformer model (paper https://arxiv.org/abs/1706.03762). 
 
+## Process
+1. Complete the model, but the evaluation part need to complement.
+2. Test model in regression, but the performance is not good.
+3. **TODO**Test model in classification.
+
 ## Requirements
 - python>=3.6
 - tensorflow>=1.13.0
@@ -15,11 +20,11 @@ pip install -r requirements.txt
 
 ## Model Training
 ```bash
-python train.py --config_filename={config_filename}
+
 ```
 
 
 ## Model Evaluating
 ```bash
-python eval.py --config_filename={saved_model_config_filename}
+
 ```
