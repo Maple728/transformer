@@ -3,7 +3,7 @@
 """
 @author: peter.s
 @project: Transformer
-@time: 2020/5/18 17:29
+@time: 2020/5/22 17:29
 @desc:
 """
 import tensorflow as tf
@@ -13,13 +13,33 @@ from models.base_model import BaseModel
 from models.modules import multi_head_attention, layer_norm, ffn, label_smoothing, positional_encoding_map
 
 
-class Transformer(BaseModel):
+class TransformerRegression(BaseModel):
+    """
+    Transformer for regression.
+    """
 
     def train(self, sess, batch_data, **kwargs):
-        pass
+        # get parameter
+        lr = kwargs.get('lr')
+        dropout_rate = kwargs.get('dropout_rate', 0.0)
+
+        fd = {
+            self.x_ph: batch_data[0],
+            self.y_ph: batch_data[1],
+            self.lr_ph: lr,
+            self.dropout_ph: dropout_rate
+        }
+        _, loss, pred, real = sess.run([self.train_op, self.loss, self.y_hat, self.y_ph], feed_dict=fd)
+        return loss, pred[:, :-1], real[:, 1:]
 
     def predict(self, sess, batch_data, **kwargs):
-        pass
+        fd = {
+            self.x_ph: batch_data[0],
+            self.y_ph: batch_data[1],
+            self.dropout_ph: 0.0
+        }
+        loss, pred, real = sess.run([self.loss, self.y_hat, self.y_ph], feed_dict=fd)
+        return loss, pred[:, :-1], real[:, 1:]
 
     def __init__(self, model_config, padding_flag=0):
         # super class initialization
@@ -31,60 +51,53 @@ class Transformer(BaseModel):
         self.n_heads = model_config.get('n_heads')
         self.hidden_dim = model_config.get('hidden_dim')
         self.ffn_dim = model_config.get('ffn_dim')
-        self.input_process_dim = model_config.get('input_process_dim')
-        self.output_process_dim = model_config.get('output_process_dim')
-        self.max_len = model_config.get('max_len', 256)
 
+        self.D = model_config.get('D')
+        self.T = model_config.get('T')
+        self.h = model_config.get('h')
         # model input
         with tf.variable_scope('model_input'):
-            # shape -> [batch_size, seq_len]
-            self.x_ph = tf.placeholder(tf.int32, shape=[None, None])
-            self.y_ph = tf.placeholder(tf.int32, shape=[None, None])
+            self.x_ph = tf.placeholder(tf.float32, shape=[None, self.T, self.D])
+            self.y_ph = tf.placeholder(tf.float32, shape=[None, self.h, self.D])
 
             # training placeholder
             self.lr_ph = tf.placeholder(tf.float32)
             self.dropout_ph = tf.placeholder(tf.float32)
 
         with tf.variable_scope('transformer'):
-            # generate source and target sequence embedding map
-            # shape -> [process_dim, hidden_dim]
-            self.src_embedding_map = self.gen_embedding_map(self.input_process_dim,
-                                                            self.hidden_dim,
-                                                            'src_embedding_map')
-            self.tgt_embedding_map = self.gen_embedding_map(self.output_process_dim,
-                                                            self.hidden_dim,
-                                                            'tgt_embedding_map')
-
             # process mask
             # shape -> [batch_size, seq_len]
-            src_mask = tf.cast(tf.not_equal(self.x_ph, self.padding_flag), tf.float32)
-            tgt_mask = tf.cast(tf.not_equal(self.y_ph, self.padding_flag), tf.float32)
+            src_mask = None
+            tgt_mask = None
 
             # --- Inputs and Outputs Embedding ---
-            # embed source and target sequence using corresponding embedding map separately
+            self.emb_weights = tf.get_variable('emb_weights', shape=[self.D, self.hidden_dim],
+                                               initializer=tf.glorot_uniform_initializer())
+            emb_bias = tf.get_variable('emb_bias', shape=[self.hidden_dim],
+                                       initializer=tf.constant_initializer(0.1))
             # shape -> [batch_size, seq_len, hidden_dim]
-            src_embeddings = tf.nn.embedding_lookup(self.src_embedding_map, self.x_ph)
-            tgt_embeddings = tf.nn.embedding_lookup(self.tgt_embedding_map, self.y_ph)
+            src_embeddings = tf.einsum('btd,dk->btk', self.x_ph, self.emb_weights) + emb_bias
+            tgt_embeddings = tf.einsum('btd,dk->btk', self.y_ph, self.emb_weights) + emb_bias
 
-            # --- Positional Encoding ---
-            # get positional encoding of source and target sequence
-            # shape -> [max_len, hidden_dim]
-            pe_map = tf.convert_to_tensor(positional_encoding_map(self.max_len, self.hidden_dim),
-                                          dtype=tf.float32)
-
-            src_seq_len = tf.shape(self.x_ph)[1]
-            tgt_seq_len = tf.shape(self.y_ph)[1]
-            # shape -> [1, seq_len, hidden_dim]
-            src_pe = pe_map[None, :src_seq_len]
-            tgt_pe = pe_map[None, :tgt_seq_len]
-
-            # add positional encoding to embedding element-wisely
-            src_embeddings += src_pe
-            tgt_embeddings += tgt_pe
-
-            # use dropout
-            src_embeddings = self.use_dropout(src_embeddings)
-            tgt_embeddings = self.use_dropout(src_embeddings)
+            # # --- Positional Encoding ---
+            # # get positional encoding of source and target sequence
+            # # shape -> [max_len, hidden_dim]
+            # pe_map = tf.convert_to_tensor(positional_encoding_map(self.max_len, self.hidden_dim),
+            #                               dtype=tf.float32)
+            #
+            # src_seq_len = tf.shape(self.x_ph)[1]
+            # tgt_seq_len = tf.shape(self.y_ph)[1]
+            # # shape -> [1, seq_len, hidden_dim]
+            # src_pe = pe_map[None, :src_seq_len]
+            # tgt_pe = pe_map[None, :tgt_seq_len]
+            #
+            # # add positional encoding to embedding element-wisely
+            # src_embeddings += src_pe
+            # tgt_embeddings += tgt_pe
+            #
+            # # use dropout
+            # src_embeddings = self.use_dropout(src_embeddings)
+            # tgt_embeddings = self.use_dropout(src_embeddings)
 
             # --- Encoder ---
             enc_output = self.encode(src_embeddings, src_mask)
@@ -92,14 +105,10 @@ class Transformer(BaseModel):
             dec_output = self.decode(tgt_embeddings, enc_output, tgt_mask, src_mask)
             # --- Inference ---
             # shape -> [batch_size, seq_len], [batch_size, seq_len, process_dim]
-            y_hat, logits = self.inference(dec_output)
+            y_hat = self.inference(dec_output)
 
             # Loss Function
-            # shape -> [batch_size, seq_len, process_dim]
-            y_ = label_smoothing(tf.one_hot(self.y_ph, depth=self.output_process_dim))
-            # shape -> [batch_size, seq_len, process_dim]
-            ce = tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=logits)
-            loss = tf.reduce_sum(ce * tf.expand_dims(tgt_mask, axis=-1)) / (tf.reduce_sum(tgt_mask) + 1e-8)
+            loss = tf.reduce_mean(tf.abs(y_hat[:, :-1] - self.y_ph[:, 1:]))
 
             optimizer = tf.train.AdamOptimizer(self.lr_ph)
             train_op = optimizer.minimize(loss)
@@ -204,17 +213,15 @@ class Transformer(BaseModel):
         :param dec_output: a tensor with shape [batch_size, seq_len, hidden_dim]
         :return:
         y_hat: a tensor with shape [batch_size, seq_len], which contains the index of predicted point.
-        logits: a tensor with shape [batch_size, seq_len, process_dim], which contains the logit for each point.
         """
         with tf.variable_scope('inference', reuse=tf.AUTO_REUSE):
             # using liner projection to obtain final result
             # shape -> [batch_size, seq_len, process_dim]
-            logits = tf.einsum('btd,kd->btk', dec_output, self.tgt_embedding_map)
+            bias = tf.get_variable('bias', shape=[self.D],
+                                   initializer=tf.constant_initializer(0.1))
+            y_hat = tf.einsum('btk,dk->btd', dec_output, self.emb_weights) + bias
 
-            # shape -> [batch_size, seq_len]
-            y_hat = tf.to_int32(tf.argmax(logits, axis=-1))
-
-        return y_hat, logits
+        return y_hat
 
     def use_dropout(self, x):
         return tf.nn.dropout(x, rate=self.dropout_ph)

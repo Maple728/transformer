@@ -2,20 +2,21 @@ base_dir: logs
 data:
   batch_size: 64
   data_name: pems04
-  data_filename: datasets/PEMS04/pems04.npz
-  T_skip: 288
+  data_filename: datasets/PEMS08/pems08.npz
   cache_dir: None
   metrics: [rmse, mae]
 
 model:
-  name: Transformer
-  N: 6
-  n_heads: 8
-  hidden_dim: 512
-  ffn_dim: 2048
+  name: TransformerRegression
+  N: 3
+  n_heads: 4
+  hidden_dim: 128
+  ffn_dim: 512
   input_process_dim: 32
   output_process_dim: 32
-
+#  T: 288
+#  h: 12
+#  D: 170
 
 train:
   dropout_rate: 0.1
@@ -23,4 +24,4 @@ train:
   epoch: 0
   max_epoch: 500
   lr_scheduler: PlateauLRScheduler
-  patience: 15
+  patience: 10
